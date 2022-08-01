@@ -12,14 +12,12 @@ RUN ninja install
 
 COPY . /repo
 WORKDIR /repo/build
-RUN meson ..
-RUN ninja 
-
-RUN mkdir -p /deps
-RUN ldd /repo/build/src/manager/kiwix-manage | tr -s '[:blank:]' '\n' | grep '^/' | xargs -I % sh -c 'cp % /deps;'
+RUN meson .. --prefix=/install
+RUN ninja install
 
 FROM ubuntu:22.04 as package
-
-COPY --from=builder /deps /deps
-COPY --from=builder /repo/build/src/manager/kiwix-manage /repo/build/src/manager/kiwix-manage
+RUN apt-get update
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y libzim-dev libpugixml-dev libcurl4-openssl-dev libmicrohttpd-dev
+COPY --from=builder /repo/build/src/manager/kiwix-manage /
+COPY --from=builder /libkiwix/build/src /deps/
 ENV LD_LIBRARY_PATH=/deps

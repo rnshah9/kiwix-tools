@@ -1,7 +1,6 @@
 project: kiwix-tools
 target: kiwix-manage
 cmds:
-  - cmd: /repo/build/src/manager/kiwix-manage /test.xml show
-    filepath: /test.xml
+  - cmd: /kiwix-manage @@ show
     env:
       DISABLE_SMOKETEST: '1'
