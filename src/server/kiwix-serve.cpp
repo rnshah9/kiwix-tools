@@ -1,3 +1,4 @@
+
 /*
  * Copyright 2009-2019 Emmanuel Engelhart <kelson@kiwix.org>
  *
@@ -69,6 +70,7 @@ void usage()
             << "\t-b, --blockexternal\tPrevent users from directly accessing external links" << std::endl
             << "\t-p, --port\t\tTCP port on which to listen to HTTP requests (default: 80)" << std::endl
             << "\t-r, --urlRootLocation\tURL prefix on which the content should be made available (default: /)" << std::endl
+            << "\t-s, --searchLimit\tMaximun number of zim in a fulltext multizim search (default: No limit)" << std::endl
             << "\t-t, --threads\t\tNumber of threads to run in parallel (default: " << DEFAULT_THREADS << ")" << std::endl
             << "\t-v, --verbose\t\tPrint debug log to STDOUT" << std::endl
             << "\t-V, --version\t\tPrint software version" << std::endl
@@ -83,22 +85,32 @@ void usage()
             << std::endl;
 }
 
-string loadCustomTemplate (string customIndexPath) {
+std::string loadCustomTemplate (std::string customIndexPath) {
   customIndexPath = kiwix::isRelativePath(customIndexPath) ?
                       kiwix::computeAbsolutePath(kiwix::getCurrentDirectory(), customIndexPath) :
                       customIndexPath;
   if (!kiwix::fileReadable(customIndexPath)) {
-    throw runtime_error("No such file exist (or file is not readable) " + customIndexPath);
+    throw std::runtime_error("No such file exist (or file is not readable) " + customIndexPath);
   }
   if (kiwix::getMimeTypeForFile(customIndexPath) != "text/html") {
-    throw runtime_error("Invalid File Mime Type " + kiwix::getMimeTypeForFile(customIndexPath));
+    throw std::runtime_error("Invalid File Mime Type " + kiwix::getMimeTypeForFile(customIndexPath));
   }
-  string indexTemplateString = kiwix::getFileContent(customIndexPath);
+  std::string indexTemplateString = kiwix::getFileContent(customIndexPath);
 
   if (indexTemplateString.empty()) {
-    throw runtime_error("Unreadable or empty file " + customIndexPath);
+    throw std::runtime_error("Unreadable or empty file " + customIndexPath);
   }
   return indexTemplateString;
+}
+
+inline std::string normalizeRootUrl(std::string rootUrl)
+{
+  while ( !rootUrl.empty() && rootUrl.back() == '/' )
+    rootUrl.pop_back();
+
+  while ( !rootUrl.empty() && rootUrl.front() == '/' )
+    rootUrl = rootUrl.substr(1);
+  return rootUrl.empty() ? rootUrl : "/" + rootUrl;
 }
 
 volatile sig_atomic_t waiting = false;
@@ -184,15 +196,15 @@ int main(int argc, char** argv)
   setup_sighandlers();
 #endif
 
-  std::string rootLocation = "";
+  std::string rootLocation = "/";
   kiwix::Library library;
   unsigned int nb_threads = DEFAULT_THREADS;
-  vector<string> zimPathes;
-  string libraryPath;
-  string rootPath;
-  string address;
-  string customIndexPath="";
-  string indexTemplateString="";
+  std::vector<std::string> zimPathes;
+  std::string libraryPath;
+  std::string rootPath;
+  std::string address;
+  std::string customIndexPath="";
+  std::string indexTemplateString="";
   int serverPort = 80;
   int daemonFlag [[gnu::unused]] = false;
   int libraryFlag = false;
@@ -204,6 +216,7 @@ int main(int argc, char** argv)
   bool monitorLibrary = false;
   unsigned int PPID = 0;
   int ipConnectionLimit = 0;
+  int searchLimit = 0;
 
   static struct option long_options[]
       = {{"daemon", no_argument, 0, 'd'},
@@ -223,15 +236,22 @@ int main(int argc, char** argv)
          {"customIndex", required_argument, 0, 'c'},
          {"monitorLibrary", no_argument, 0, 'M'},
          {"ipConnectionLimit", required_argument, 0, 'L'},
+         {"searchLimit", required_argument, 0, 's'},
          {0, 0, 0, 0}};
 
+  std::set<int> usedOptions;
   /* Argument parsing */
   while (true) {
     int option_index = 0;
     int c
-        = getopt_long(argc, argv, "hzmnbdvVla:p:f:t:r:i:c:ML:", long_options, &option_index);
+        = getopt_long(argc, argv, "hzmnbdvVla:p:f:t:r:i:c:ML:s:", long_options, &option_index);
 
     if (c != -1) {
+      auto insertRes = usedOptions.insert(c);
+      if (!insertRes.second) {
+        std::cerr << "Multiple values of same option are not allowed." << std::endl;
+        exit(1);
+      }
       switch (c) {
         case 'h':
           usage();
@@ -267,16 +287,16 @@ int main(int argc, char** argv)
           PPID = atoi(optarg);
           break;
         case 'i':
-          address = string(optarg);
+          address = std::string(optarg);
           break;
         case 't':
           nb_threads = atoi(optarg);
           break;
         case 'r':
-          rootLocation = string(optarg);
+          rootLocation = std::string(optarg);
           break;
         case 'c':
-          customIndexPath = string(optarg);
+          customIndexPath = std::string(optarg);
           break;
         case 'M':
           monitorLibrary = true;
@@ -284,6 +304,12 @@ int main(int argc, char** argv)
         case 'L':
           ipConnectionLimit = atoi(optarg);
           break;
+        case 's':
+          searchLimit = atoi(optarg);
+          break;
+        case '?':
+          usage();
+          return 2;
       }
     } else {
       if (optind < argc) {
@@ -306,7 +332,7 @@ int main(int argc, char** argv)
 
   /* Setup the library manager and get the list of books */
   kiwix::Manager manager(&library);
-  vector<string> libraryPaths;
+  std::vector<std::string> libraryPaths;
   if (libraryFlag) {
     libraryPaths = kiwix::split(libraryPath, ";");
     if ( !reloadLibrary(manager, libraryPaths) ) {
@@ -315,15 +341,15 @@ int main(int argc, char** argv)
 
     /* Check if the library is not empty (or only remote books)*/
     if (library.getBookCount(true, false) == 0) {
-      cerr << "The XML library file '" << libraryPath
-           << "' is empty (or has only remote books)." << endl;
+      std::cerr << "The XML library file '" << libraryPath
+           << "' is empty (or has only remote books)." << std::endl;
     }
   } else {
     std::vector<std::string>::iterator it;
     for (it = zimPathes.begin(); it != zimPathes.end(); it++) {
       if (!manager.addBookFromPath(*it, *it, "", false)) {
-        cerr << "Unable to add the ZIM file '" << *it
-             << "' to the internal library." << endl;
+        std::cerr << "Unable to add the ZIM file '" << *it
+             << "' to the internal library." << std::endl;
         exit(1);
       }
     }
@@ -371,12 +397,13 @@ int main(int argc, char** argv)
   server.setBlockExternalLinks(blockExternalLinks);
   server.setIndexTemplateString(indexTemplateString);
   server.setIpConnectionLimit(ipConnectionLimit);
+  server.setMultiZimSearchLimit(searchLimit);
 
   if (! server.start()) {
     exit(1);
   }
 
-  std::string url = "http://" + server.getAddress() + ":" + std::to_string(server.getPort()) + "/" + rootLocation;
+  std::string url = "http://" + server.getAddress() + ":" + std::to_string(server.getPort()) + normalizeRootUrl(rootLocation);
   std::cout << "The Kiwix server is running and can be accessed in the local network at: "
             << url << std::endl;
 
@@ -402,7 +429,7 @@ int main(int argc, char** argv)
       int ret = sysctl(mib, MIBSIZE, &kp, &len, NULL, 0);
       if (ret != -1 && len > 0) {
 #else /* Linux & co */
-      string procPath = "/proc/" + std::to_string(PPID);
+      std::string procPath = "/proc/" + std::to_string(PPID);
       if (access(procPath.c_str(), F_OK) != -1) {
 #endif
       } else {
